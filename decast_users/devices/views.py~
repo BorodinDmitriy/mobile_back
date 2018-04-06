@@ -1,0 +1,335 @@
+# -*- coding: utf-8 -*-
+from __future__ import unicode_literals
+
+from django.shortcuts import render
+
+from django.shortcuts import get_object_or_404
+from django.http import HttpResponse, Http404
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.exceptions import APIException
+from rest_framework import status
+from .models import Device, User, Reading
+from .serializers import DeviceSerializer, UserSerializer, ReadingSerializer
+from validate_email import validate_email
+from django.utils.cache import force_text
+
+import logging,json
+
+#removable
+from django.contrib.auth.models import User as UserAdmin
+
+# Create your views here.
+logger = logging.getLogger('django')
+
+
+class CustomValidation(APIException):
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    default_detail = 'A server error occurred.'
+
+    def __init__(self, detail, status_code):
+        if status_code is not None:self.status_code = status_code
+        if detail is not None:
+            self.detail = {"detail": force_text(detail)}
+        else: self.detail = {'detail': force_text(self.default_detail)}
+        
+# Get users info
+# /users
+class UsersByEmail(APIView):
+
+  def get(self,request):
+    if request.user.is_authenticated():
+      user = UserAdmin.objects.get(username=request.user.username)
+      response_data = {}
+      response_data['firstName'] = user.first_name
+      response_data['lastName'] = user.last_name
+      response_data['email'] = user.email
+      return Response(response_data,status=status.HTTP_200_OK)
+    else:
+      return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+# Get the user id by email
+# /user
+class UserByEmail(APIView):
+  
+  def check_email(self,email):
+    return validate_email(email)
+  
+  def get(self,request):
+    email=""
+    result = {}
+    is_valid = 0
+    if 'email' in request.GET:
+      email=request.GET["email"]
+    try:
+      try:
+	logger.info('Validating email...')
+	is_valid = self.check_email(email)
+	if (is_valid == 0):
+	  result["detail"] = "Invalid email!"
+	  return Response(result,status=status.HTTP_400_BAD_REQUEST)
+      except:
+	result["detail"] = "Invalid email!"
+	return Response(result,status=status.HTTP_400_BAD_REQUEST)
+      try:
+	if (is_valid):
+	  logger.info('Trying to get user by email...')
+	  user = User.objects.get(login=email);
+      except:
+	result["detail"] = "No user by this email!"
+	return Response(result,status=status.HTTP_404_NOT_FOUND)
+    
+      if user:
+	logger.info('Successfully got user by email...')
+	return Response(user["id"],status=status.HTTP_200_OK)
+      result["detail"] = "No user by this email"
+      return Response(result,status=status.HTTP_204_NO_CONTENT)
+    except:
+      result["detail"] = "Unsuccessful email getting!."
+      logger.info('Unsuccessful email getting!.')
+      return Response(result,status=status.HTTP_404_NOT_FOUND)
+  
+  def post(self,request):
+    result = {}
+    try:
+      logger.info('Validating email...')
+      print(request.data)
+      is_valid = self.check_email(request.data["login"])
+    except:
+      result["detail"] = "Invalid email!"
+      return Response(result,status=status.HTTP_400_BAD_REQUEST)
+    logger.info('Trying to serialize user data...')
+    serializer = UserSerializer(data=request.data)
+    if serializer.is_valid():
+      logger.info('Serializer is valid. Saving...')
+      user = serializer.save()
+      return Response(serializer.data, status=status.HTTP_201_CREATED)
+    logger.info('Serializer is not valid.')
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+# List all devices or create a new one
+# devices/
+class DeviceList(APIView):
+  
+  def get(self, request):
+    result = {}
+    try:
+      logger.info('Trying to get list of devices...')
+      devices = Device.objects.all()
+      serializer = DeviceSerializer(devices, many=True)
+    # if serializer.is_valid():
+      logger.info('Successfully got list of devices.')
+      return Response(serializer.data,status=HTTP_200_OK)
+    except:
+      result["detail"] = "Cant serialize devices"
+      raise CustomValidation("Cant serialize devices",status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    
+  #def post(self,request):
+   # serializer = DeviceSerializer(data=request.data)
+    #if serializer.is_valid():
+    #  serializer.save()
+    #  return Response(serializer.data,status=status.HTTP_201_CREATED)
+   # return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
+  
+# devices/<id>
+class DeviceDetail(APIView):
+  def get_object(self,id):
+    try:
+      logger.info('Trying to get device by id...')
+      return Device.objects.get(id=id)
+    except Device.DoesNotExist:
+      logger.info('Device doesnt exist by id...')
+      raise Http404
+    
+  def check_personal_account(self,personal_account):
+    check_array = personal_account.split('-')
+    length = len(check_array)
+    if (length != 4):
+      return 0
+    else:
+      for i in range(0,length):
+	if (long(check_array[i]) == 0):
+	  return 0
+    return 1
+	
+
+  def get(self,request,id):
+    result = {}
+    try:
+      snippet = self.get_object(id)
+      logger.info('Trying to serialize device object...')
+      serializer = DeviceSerializer(snippet)
+      logger.info('Success')
+      return Response(serializer.data)
+    except:
+      result["detail"] = "Cant serialize device"
+      raise CustomValidation("Not found", status_code=status.HTTP_404_NOT_FOUND)
+  
+  def put(self,request,id):
+    result = {}
+    try:
+      snippet = self.get_object(id)
+      logger.info('Trying to update snippet id...')
+      try:
+	is_valid = self.check_personal_account(str(request.data["personal_account"]))
+	if (is_valid == 0):
+	  result["detail"] = "Invalid personal_account"
+	  return Response(result,status=HTTP_400_BAD_REQUEST)
+      except:
+	return Response(result,status=HTTP_500_INTERNAL_SERVER_ERROR)
+      snippet.id=id
+      snippet.personal_account=str(request.data["personal_account"])
+      logger.info('Saving...')
+      #snippet.serial_number=str(request.data["serial_number"])
+      snippet.save()
+      logger.info('Success.')
+      return Response(DeviceSerializer(snippet).data,status=status.HTTP_201_CREATED)
+    except:
+      result["detail"] = 'Couldnt update device information.';
+      logger.info('Couldnt update device information.')
+      raise CustomValidation('Couldnt update device information.', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+  
+  def delete(self,request,id):
+    result = {}
+    try:
+      snippet = self.get_object(id)
+      logger.info('Trying to delete device...')
+      snippet.delete()
+      logger.info('Success.')
+      return Response(status=status.HTTP_204_NO_CONTENT)
+    except:
+      result["detail"] = 'Couldnt delete device information.';
+      logger.info('Couldnt delete device information.')
+      raise CustomValidation('Couldnt update device information.', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+  
+# users/<id>/devices/
+class DevicesByUserId(APIView):
+  def check_personal_account(self,personal_account):
+    check_array = personal_account.split('-')
+    print(check_array)
+    length = len(check_array)
+    if (length != 4):
+      return 0
+    else:
+      for i in range(0,length):
+	if (long(check_array[i]) == 0):
+	  return 0
+    return 1
+  
+  def check_serial_number(self,serial_number):
+    return long(serial_number)
+  
+  def get(self, request, id):
+    try:
+      logger.info('Trying to get user by id...')
+      user = User.objects.get(id=id)
+      logger.info('Trying to get user devices...')
+      devices = user.device_set.all()
+      logger.info('Trying to serialize user devices...')
+      serializer = DeviceSerializer(devices, many=True)
+      logger.info('Success')
+      return Response(serializer.data)
+    except:
+      logger.info('Didnt find devices for user.')
+      return Response(status=status.HTTP_404_NOT_FOUND)
+  
+  def post(self,request,id):
+    result = {}
+    user = ""
+    try:
+      logger.info('Trying to get user by id...')
+      try:
+	user = User.objects.get(id=id)
+      except:
+	result['detail'] = "Cant find user"
+	return Response(result,status=status.HTTP_400_BAD_REQUEST)
+      
+      try:
+	is_valid = self.check_personal_account(request.data["personal_account"])
+	if not (is_valid):
+	  result['detail'] = "Invalid personal_account"
+	  return Response(result,status=status.HTTP_400_BAD_REQUEST)
+      except:
+	result['detail'] = "Invalid personal_account"
+	return Response(result,status=status.HTTP_400_BAD_REQUEST)
+      
+      try:
+	is_valid = self.check_serial_number(request.data["serial_number"])
+	if not (is_valid):
+	  result['detail'] = "Invalid serial_number"
+	  return Response(result,status=status.HTTP_400_BAD_REQUEST)
+      except:
+	result['detail'] = "Invalid serial_number"
+	return Response(result,status=status.HTTP_400_BAD_REQUEST)
+    
+      if user:
+	logger.info('Trying to create device for user...')
+	device = Device.objects.create(
+	  personal_account=request.data["personal_account"],
+	  serial_number=request.data["serial_number"],
+	  user=user
+	)
+	logger.info('Success.')
+	return Response(device.id,status=status.HTTP_201_CREATED)
+    except:
+      logger.info('Couldnt create device for user.')
+      raise CustomValidation('Couldnt create device for user.', status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+  
+  #def put(self,request,id):
+  #    print(request.data)
+  #    user = User.objects.get(id=id)
+   # 
+  #    print(user)
+ #     if user:
+#	Device.objects.save(
+#	  personal_account=request.data["personal_account"],
+#	  serial_number=request.data["serial_number"],
+#	  user=user
+#	)
+#	return Response(status=status.HTTP_201_CREATED)
+  
+# devices/<id>/readings 
+class DeviceReadings(APIView):
+  def get(self, request, id):
+    logger.info('Trying to get device by id...')
+    device = Device.objects.get(id=id)
+    #devices = user.device_set.all()
+    logger.info('Checking start dates...')
+    if request.GET.get('start_date') is None:
+      readings = device.reading_set.all()
+    else:
+      readings = device.reading_set.get(date > request.data["start_date"])
+    logger.info('Trying to serialize reading object...')
+    serializer = ReadingSerializer(readings, many=True)
+    #print(id)
+    logger.info('Success.')
+    return Response(serializer.data)
+  
+  def post(self,request,id):
+    logger.info('Trying to get device by id...')
+    device = Device.objects.get(id=id)
+    
+    if device:
+      logger.info('Trying to get create reading objectl...')
+      reading = Reading.objects.create(
+	value=request.data["value"],
+	device=device
+      )
+      logger.info('Trying to update device...')
+      snippet = Device.objects.get(id=id)
+      snippet.sent_reading=reading.id
+      snippet.save()
+      logger.info('Success.')
+      return Response(reading.id,status=status.HTTP_201_CREATED)
+    logger.info('Couldnt create reading.')
+    return Response(status=status.HTTP_400_BAD_REQUEST)
+  
+# devices/<id>/readings/<rid> 
+class ReadingDetail(APIView):
+  def get(self, request, id, rid):
+    logger.info('Trying to get reading by id...')
+    reading = Reading.objects.get(id=rid)
+    logger.info('Trying to serialize reading object...')
+    serializer = ReadingSerializer(reading)
+    return Response(serializer.data)
